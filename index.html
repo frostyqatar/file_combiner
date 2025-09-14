@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Comprehensive File Processor</title>
+
+    <!-- JS libraries are loaded here -->
+    <script src="https://unpkg.com/jspdf@latest/dist/jspdf.umd.min.js"></script>
+    <script src="https://unpkg.com/mammoth@1.4.1/mammoth.browser.min.js"></script>
+    <script src="https://unpkg.com/pdfjs-dist@2.12.313/build/pdf.min.js"></script>
+    <script src="https://unpkg.com/jszip@3.7.1/dist/jszip.min.js"></script>
+    <!-- Library for parsing .msg files -->
+    <script src="https://unpkg.com/msg-reader-js@1.1.2/dist/msg.reader.min.js"></script>
+    <!-- Library for parsing .xlsx and .xltm files -->
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+
+</head>
+<body>
+
+    <h1>Comprehensive File Text Extractor</h1>
+    <p>Drag and drop folders, ppts, pdfs, txt, docx, msg, xlsx, xltm, and csv files below. The tool will scan everything within them and combine the text into a single PDF or a text corpus optimized for LLMs.</p>
+
+    <div id="drop-zone" style="border: 2px dashed #ccc; padding: 20px; text-align: center;">
+        <p>Drag & Drop Files and Folders Here</p>
+        <p>or</p>
+        <input type="file" id="file-input" webkitdirectory multiple>
+    </div>
+
+    <button id="start-btn" style="margin-top: 10px;">Start Processing</button>
+
+    <h2>Selected Files:</h2>
+    <ul id="file-list"></ul>
+
+    <h2>Progress:</h2>
+    <progress id="progress-bar" value="0" max="100" style="width: 100%;"></progress>
+    <p id="progress-text"></p>
+
+    <div id="export-buttons" style="display: none; margin-top: 20px;">
+        <button id="export-pdf">Export to PDF</button>
+        <button id="export-txt">Export to Text Corpus</button>
+    </div>
+
+    <script>
+        // This function runs only after the entire page AND all external scripts are fully loaded.
+        window.addEventListener('load', (event) => {
+            // Set the workerSrc for pdf.js
+            pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@2.12.313/build/pdf.worker.min.js`;
+
+            const dropZone = document.getElementById('drop-zone');
+            const fileInput = document.getElementById('file-input');
+            const startBtn = document.getElementById('start-btn');
+            const fileList = document.getElementById('file-list');
+            const progressBar = document.getElementById('progress-bar');
+            const progressText = document.getElementById('progress-text');
+            const exportButtons = document.getElementById('export-buttons');
+            const exportPdfBtn = document.getElementById('export-pdf');
+            const exportTxtBtn = document.getElementById('export-txt');
+
+            let allFiles = [];
+            let combinedText = '';
+
+            dropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropZone.style.backgroundColor = '#f0f0f0';
+            });
+
+            dropZone.addEventListener('dragleave', () => {
+                dropZone.style.backgroundColor = 'transparent';
+            });
+
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropZone.style.backgroundColor = 'transparent';
+                const items = e.dataTransfer.items;
+                for (let i = 0; i < items.length; i++) {
+                    const item = items[i].webkitGetAsEntry();
+                    if (item) {
+                        scanFiles(item);
+                    }
+                }
+            });
+
+            fileInput.addEventListener('change', (e) => {
+                const files = e.target.files;
+                for (let i = 0; i < files.length; i++) {
+                    allFiles.push(files[i]);
+                    const listItem = document.createElement('li');
+                    listItem.textContent = files[i].webkitRelativePath || files[i].name;
+                    fileList.appendChild(listItem);
+                }
+            });
+
+            function scanFiles(item) {
+                if (item.isDirectory) {
+                    const directoryReader = item.createReader();
+                    directoryReader.readEntries((entries) => {
+                        entries.forEach((entry) => {
+                            scanFiles(entry);
+                        });
+                    });
+                } else {
+                    item.file((file) => {
+                        allFiles.push(file);
+                        const listItem = document.createElement('li');
+                        listItem.textContent = item.fullPath;
+                        fileList.appendChild(listItem);
+                    });
+                }
+            }
+
+            startBtn.addEventListener('click', async () => {
+                if (allFiles.length === 0) {
+                    alert('Please select files first.');
+                    return;
+                }
+                startBtn.disabled = true;
+                exportButtons.style.display = 'none';
+                progressBar.value = 0;
+                progressText.textContent = 'Starting...';
+                combinedText = '';
+
+                for (let i = 0; i < allFiles.length; i++) {
+                    const file = allFiles[i];
+                    progressText.textContent = `Processing ${file.name}...`;
+                    try {
+                        let text = '';
+                        const fileExtension = file.name.split('.').pop().toLowerCase();
+                        const arrayBuffer = await file.arrayBuffer();
+
+                        if (fileExtension === 'txt' || fileExtension === 'csv') {
+                            text = new TextDecoder("utf-8", { fatal: true }).decode(arrayBuffer);
+                        } else if (fileExtension === 'docx') {
+                            const result = await mammoth.extractRawText({ arrayBuffer: arrayBuffer });
+                            text = result.value;
+                        } else if (fileExtension === 'pdf') {
+                            const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+                            for (let j = 1; j <= pdf.numPages; j++) {
+                                const page = await pdf.getPage(j);
+                                const textContent = await page.getTextContent();
+                                textContent.items.forEach(item => {
+                                    text += item.str + ' ';
+                                });
+                                text += '\n';
+                            }
+                        } else if (fileExtension === 'pptx') {
+                            const zip = await JSZip.loadAsync(arrayBuffer);
+                            const slidePromises = [];
+                            zip.folder("ppt/slides").forEach((relativePath, file) => {
+                                if (relativePath.endsWith('.xml')) {
+                                    slidePromises.push(file.async("string"));
+                                }
+                            });
+                            const slideXmls = await Promise.all(slidePromises);
+                            slideXmls.forEach(xmlString => {
+                                const parser = new DOMParser();
+                                const xmlDoc = parser.parseFromString(xmlString, "text/xml");
+                                const textNodes = xmlDoc.getElementsByTagName("a:t");
+                                for (let k = 0; k < textNodes.length; k++) {
+                                    text += textNodes[k].textContent + ' ';
+                                }
+                                text += '\n';
+                            });
+                        } else if (fileExtension === 'msg') {
+                            const msgReader = new window.MsgReader(arrayBuffer);
+                            const fileData = msgReader.getFileData();
+                            if (fileData.error) {
+                                text = `Error reading MSG file: ${fileData.error}`;
+                            } else {
+                                const recipients = (fileData.recipients || []).map(r => `${r.name} <${r.email}>`).join(', ');
+                                text = `From: ${fileData.senderName} <${fileData.senderEmail}>\n`;
+                                text += `To: ${recipients}\n`;
+                                text += `Subject: ${fileData.subject}\n\n`;
+                                text += `${fileData.body}`;
+                            }
+                        } else if (fileExtension === 'xlsx' || fileExtension === 'xltm') {
+                            const workbook = XLSX.read(arrayBuffer, { type: 'buffer' });
+                            workbook.SheetNames.forEach(sheetName => {
+                                text += `\n--- Sheet: ${sheetName} ---\n`;
+                                const worksheet = workbook.Sheets[sheetName];
+                                const sheetText = XLSX.utils.sheet_to_csv(worksheet);
+                                text += sheetText + '\n';
+                            });
+                        }
+                        
+                        if (text && text.trim().length > 0) {
+                           combinedText += `\n\n--- Start of ${file.name} ---\n\n${text}\n\n--- End of ${file.name} ---\n\n`;
+                        } else {
+                            combinedText += `\n\n--- Content not extracted from ${file.name} (unsupported, empty, or error) ---\n\n`;
+                        }
+                        
+                    } catch (error) {
+                        console.error(`Error processing ${file.name}:`, error);
+                        combinedText += `\n\n--- Error processing ${file.name}: ${error.message} ---\n\n`;
+                    }
+                    progressBar.value = ((i + 1) / allFiles.length) * 100;
+                }
+
+                progressText.textContent = 'Processing complete!';
+                startBtn.disabled = false;
+                exportButtons.style.display = 'block';
+            });
+
+            exportPdfBtn.addEventListener('click', () => {
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF();
+                const margin = 10;
+                const pageHeight = doc.internal.pageSize.height;
+                const splitText = doc.splitTextToSize(combinedText, doc.internal.pageSize.width - margin * 2);
+                let y = margin;
+                
+                splitText.forEach(line => {
+                    // Estimate line height
+                    const lineHeight = 5; 
+                    if (y + lineHeight > pageHeight - margin) {
+                        doc.addPage();
+                        y = margin;
+                    }
+                    doc.text(line, margin, y);
+                    y += lineHeight;
+                });
+                doc.save('combined_documents.pdf');
+            });
+
+            exportTxtBtn.addEventListener('click', () => {
+                const blob = new Blob([combinedText], { type: 'text/plain;charset=utf-8' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = 'text_corpus.txt';
+                link.click();
+                URL.revokeObjectURL(link.href);
+            });
+        });
+    </script>
+</body>
+</html>
