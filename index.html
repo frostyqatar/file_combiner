@@ -4,6 +4,70 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Comprehensive File Processor</title>
+    <style>
+        .file-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px;
+            margin: 4px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: #f9f9f9;
+        }
+        .file-item.excluded {
+            background-color: #ffebee;
+            border-color: #f44336;
+            opacity: 0.6;
+        }
+        .file-name {
+            flex: 1;
+            margin-right: 10px;
+        }
+        .file-actions {
+            display: flex;
+            gap: 8px;
+        }
+        .exclude-btn, .include-btn {
+            padding: 4px 8px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .exclude-btn {
+            background-color: #f44336;
+            color: white;
+        }
+        .include-btn {
+            background-color: #4caf50;
+            color: white;
+        }
+        .exclude-btn:hover {
+            background-color: #d32f2f;
+        }
+        .include-btn:hover {
+            background-color: #388e3c;
+        }
+        .file-status {
+            font-size: 12px;
+            color: #666;
+            margin-left: 8px;
+        }
+        .processing-status {
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .processing-status.success {
+            color: #4caf50;
+        }
+        .processing-status.error {
+            color: #f44336;
+        }
+        .processing-status.skipped {
+            color: #ff9800;
+        }
+    </style>
 
     <!-- JS libraries are loaded here -->
     <script src="https://unpkg.com/jspdf@latest/dist/jspdf.umd.min.js"></script>
@@ -14,6 +78,8 @@
     <script src="https://unpkg.com/msg-reader-js@1.1.2/dist/msg.reader.min.js"></script>
     <!-- Library for parsing .xlsx and .xltm files -->
     <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <!-- Library for OCR (Tesseract.js) -->
+    <script src="https://unpkg.com/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
 
 </head>
 <body>
@@ -30,7 +96,13 @@
     <button id="start-btn" style="margin-top: 10px;">Start Processing</button>
 
     <h2>Selected Files:</h2>
-    <ul id="file-list"></ul>
+    <div id="file-list-container">
+        <div id="file-list"></div>
+        <div id="excluded-files" style="display: none;">
+            <h3>Excluded Files:</h3>
+            <ul id="excluded-list"></ul>
+        </div>
+    </div>
 
     <h2>Progress:</h2>
     <progress id="progress-bar" value="0" max="100" style="width: 100%;"></progress>
@@ -51,6 +123,8 @@
             const fileInput = document.getElementById('file-input');
             const startBtn = document.getElementById('start-btn');
             const fileList = document.getElementById('file-list');
+            const excludedList = document.getElementById('excluded-list');
+            const excludedFiles = document.getElementById('excluded-files');
             const progressBar = document.getElementById('progress-bar');
             const progressText = document.getElementById('progress-text');
             const exportButtons = document.getElementById('export-buttons');
@@ -58,6 +132,7 @@
             const exportTxtBtn = document.getElementById('export-txt');
 
             let allFiles = [];
+            let excludedFilesList = [];
             let combinedText = '';
 
             dropZone.addEventListener('dragover', (e) => {
@@ -84,10 +159,7 @@
             fileInput.addEventListener('change', (e) => {
                 const files = e.target.files;
                 for (let i = 0; i < files.length; i++) {
-                    allFiles.push(files[i]);
-                    const listItem = document.createElement('li');
-                    listItem.textContent = files[i].webkitRelativePath || files[i].name;
-                    fileList.appendChild(listItem);
+                    addFile(files[i], files[i].webkitRelativePath || files[i].name);
                 }
             });
 
@@ -101,12 +173,142 @@
                     });
                 } else {
                     item.file((file) => {
-                        allFiles.push(file);
-                        const listItem = document.createElement('li');
-                        listItem.textContent = item.fullPath;
-                        fileList.appendChild(listItem);
+                        addFile(file, item.fullPath);
                     });
                 }
+            }
+
+            function addFile(file, displayPath) {
+                allFiles.push(file);
+                createFileListItem(file, displayPath, false);
+            }
+
+            function createFileListItem(file, displayPath, isExcluded = false) {
+                const listItem = document.createElement('li');
+                listItem.className = 'file-item';
+                if (isExcluded) {
+                    listItem.classList.add('excluded');
+                }
+
+                const fileInfo = document.createElement('div');
+                fileInfo.className = 'file-name';
+                fileInfo.textContent = displayPath;
+
+                const actions = document.createElement('div');
+                actions.className = 'file-actions';
+
+                const status = document.createElement('span');
+                status.className = 'file-status';
+                status.textContent = isExcluded ? 'Excluded' : 'Included';
+
+                const actionBtn = document.createElement('button');
+                if (isExcluded) {
+                    actionBtn.textContent = 'Include';
+                    actionBtn.className = 'include-btn';
+                    actionBtn.onclick = () => includeFile(file, displayPath, listItem);
+                } else {
+                    actionBtn.textContent = 'Exclude';
+                    actionBtn.className = 'exclude-btn';
+                    actionBtn.onclick = () => excludeFile(file, displayPath, listItem);
+                }
+
+                actions.appendChild(actionBtn);
+                actions.appendChild(status);
+
+                listItem.appendChild(fileInfo);
+                listItem.appendChild(actions);
+
+                if (isExcluded) {
+                    excludedList.appendChild(listItem);
+                } else {
+                    fileList.appendChild(listItem);
+                }
+            }
+
+            function excludeFile(file, displayPath, listItem) {
+                // Remove from allFiles array
+                const index = allFiles.indexOf(file);
+                if (index > -1) {
+                    allFiles.splice(index, 1);
+                }
+
+                // Add to excluded files
+                excludedFilesList.push({ file, displayPath });
+
+                // Remove from current list and add to excluded list
+                listItem.remove();
+                createFileListItem(file, displayPath, true);
+
+                // Show excluded files section if it has items
+                if (excludedFilesList.length > 0) {
+                    excludedFiles.style.display = 'block';
+                }
+            }
+
+            function includeFile(file, displayPath, listItem) {
+                // Remove from excluded files
+                const excludedIndex = excludedFilesList.findIndex(item => item.file === file);
+                if (excludedIndex > -1) {
+                    excludedFilesList.splice(excludedIndex, 1);
+                }
+
+                // Add back to allFiles
+                allFiles.push(file);
+
+                // Remove from excluded list and add to main list
+                listItem.remove();
+                createFileListItem(file, displayPath, false);
+
+                // Hide excluded files section if empty
+                if (excludedFilesList.length === 0) {
+                    excludedFiles.style.display = 'none';
+                }
+            }
+
+            // Function to detect if PDF contains mostly images
+            async function isImagePDF(pdf) {
+                let totalTextLength = 0;
+                let totalPages = pdf.numPages;
+                
+                for (let i = 1; i <= Math.min(3, totalPages); i++) { // Check first 3 pages
+                    const page = await pdf.getPage(i);
+                    const textContent = await page.getTextContent();
+                    const pageText = textContent.items.map(item => item.str).join(' ');
+                    totalTextLength += pageText.length;
+                }
+                
+                // If average text per page is less than 50 characters, likely image PDF
+                return (totalTextLength / Math.min(3, totalPages)) < 50;
+            }
+
+            // Function to extract text from image PDF using OCR
+            async function extractTextFromImagePDF(pdf) {
+                let text = '';
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                
+                for (let i = 1; i <= pdf.numPages; i++) {
+                    const page = await pdf.getPage(i);
+                    const viewport = page.getViewport({ scale: 2.0 });
+                    
+                    canvas.width = viewport.width;
+                    canvas.height = viewport.height;
+                    
+                    await page.render({
+                        canvasContext: ctx,
+                        viewport: viewport
+                    }).promise;
+                    
+                    try {
+                        const { data: { text: ocrText } } = await Tesseract.recognize(canvas, 'eng');
+                        text += ocrText + '\n';
+                    } catch (error) {
+                        console.warn(`OCR failed for page ${i}:`, error);
+                        text += `[OCR failed for page ${i}]\n`;
+                    }
+                }
+                
+                return text;
             }
 
             startBtn.addEventListener('click', async () => {
@@ -122,6 +324,16 @@
 
                 for (let i = 0; i < allFiles.length; i++) {
                     const file = allFiles[i];
+                    const fileItem = Array.from(fileList.children).find(item => 
+                        item.querySelector('.file-name').textContent.includes(file.name)
+                    );
+                    
+                    if (fileItem) {
+                        const statusSpan = fileItem.querySelector('.file-status');
+                        statusSpan.textContent = 'Processing...';
+                        statusSpan.className = 'file-status processing-status';
+                    }
+
                     progressText.textContent = `Processing ${file.name}...`;
                     try {
                         let text = '';
@@ -135,13 +347,23 @@
                             text = result.value;
                         } else if (fileExtension === 'pdf') {
                             const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
-                            for (let j = 1; j <= pdf.numPages; j++) {
-                                const page = await pdf.getPage(j);
-                                const textContent = await page.getTextContent();
-                                textContent.items.forEach(item => {
-                                    text += item.str + ' ';
-                                });
-                                text += '\n';
+                            
+                            // Check if PDF is image-based
+                            const isImage = await isImagePDF(pdf);
+                            
+                            if (isImage) {
+                                progressText.textContent = `Processing ${file.name} (OCR)...`;
+                                text = await extractTextFromImagePDF(pdf);
+                            } else {
+                                // Regular text extraction
+                                for (let j = 1; j <= pdf.numPages; j++) {
+                                    const page = await pdf.getPage(j);
+                                    const textContent = await page.getTextContent();
+                                    textContent.items.forEach(item => {
+                                        text += item.str + ' ';
+                                    });
+                                    text += '\n';
+                                }
                             }
                         } else if (fileExtension === 'pptx') {
                             const zip = await JSZip.loadAsync(arrayBuffer);
@@ -185,13 +407,28 @@
                         
                         if (text && text.trim().length > 0) {
                            combinedText += `\n\n--- Start of ${file.name} ---\n\n${text}\n\n--- End of ${file.name} ---\n\n`;
+                           if (fileItem) {
+                               const statusSpan = fileItem.querySelector('.file-status');
+                               statusSpan.textContent = 'Success';
+                               statusSpan.className = 'file-status processing-status success';
+                           }
                         } else {
                             combinedText += `\n\n--- Content not extracted from ${file.name} (unsupported, empty, or error) ---\n\n`;
+                            if (fileItem) {
+                                const statusSpan = fileItem.querySelector('.file-status');
+                                statusSpan.textContent = 'No content';
+                                statusSpan.className = 'file-status processing-status skipped';
+                            }
                         }
                         
                     } catch (error) {
                         console.error(`Error processing ${file.name}:`, error);
                         combinedText += `\n\n--- Error processing ${file.name}: ${error.message} ---\n\n`;
+                        if (fileItem) {
+                            const statusSpan = fileItem.querySelector('.file-status');
+                            statusSpan.textContent = 'Error';
+                            statusSpan.className = 'file-status processing-status error';
+                        }
                     }
                     progressBar.value = ((i + 1) / allFiles.length) * 100;
                 }
